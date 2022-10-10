@@ -1,0 +1,30 @@
+#! /bin/bash
+python train_agent.py \
+--cp_path "none" \
+--algo nail \
+--hidden_dim 64 \
+--num_hidden 2 \
+--activation relu \
+--gamma 0.97 \
+--beta 0.1 \
+--polyak 0.995 \
+--norm_obs False \
+--buffer_size 100000 \
+--batch_size 200 \
+--d_steps 50 \
+--a_steps 30 \
+--lr_d 0.001 \
+--lr_c 0.001 \
+--decay 1e-5 \
+--grad_clip 100. \
+--grad_penalty 1. \
+--grad_target 1. \
+--epochs 200 \
+--max_steps 500 \
+--steps_per_epoch 1000 \
+--update_after 2000 \
+--update_every 50 \
+--cp_every 30 \
+--verbose True \
+--save True \
+--seed 0

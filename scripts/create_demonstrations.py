@@ -76,7 +76,7 @@ def main(arglist):
     reward = torch.from_numpy(env.reward)
 
     gamma = 0.99 # discount factor
-    alpha = 10 # softmax temperature
+    alpha = 1000 # softmax temperature
     max_iter = 2000
 
     q_soft, info = value_iteration(
@@ -85,7 +85,7 @@ def main(arglist):
     print(f"soft value iteration info: {info}")
     
     # expert policy
-    beta = 200
+    beta = 1000
     policy = torch.softmax(beta * q_soft, dim=-1)
     
     dataset = []

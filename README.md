@@ -19,7 +19,7 @@ We perform experiments in the discrete-action mountain car environment. We compu
 ## Usage
 To generate demonstrations, run:
 
-```python ./scripts/create_decomstrations.py```
+```python ./scripts/create_demonstrations.py```
 
 To train the NAIL policy, run:
 

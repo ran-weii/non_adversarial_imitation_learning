@@ -58,12 +58,43 @@ class ReplayBuffer:
             rwd = np.vstack(self.rwd_eps)
             done = np.vstack(self.done_eps)
         
+        # add absorbing state flag based on done
+        if done[-1] == 1:
+            obs_a = np.zeros((1, obs.shape[1]))
+            act_a = np.zeros((1, act.shape[1]))
+            done_a = np.ones((1, 1))
+            
+            # add transition (s_T -> s_a)
+            obs = np.vstack([obs, next_obs[-1:]])
+            act = np.vstack([act, act_a])
+            next_obs = np.vstack([next_obs, obs_a])
+            rwd = np.vstack([rwd, rwd[-1:]])
+            done = np.vstack([done, done_a])
+
+            # add transition (s_a -> s_a)
+            obs = np.vstack([obs, obs_a])
+            act = np.vstack([act, act_a])
+            next_obs = np.vstack([next_obs, obs_a])
+            rwd = np.vstack([rwd, rwd[-1:]])
+            done = np.vstack([done, done_a])
+
+            # add absorbing indicator
+            absorb = np.zeros((len(done), 1))
+            absorb[-1:] = 1
+            next_absorb = np.zeros((len(done), 1))
+            next_absorb[-2:] = 1
+        else:
+            absorb = np.zeros((len(obs), 1))
+            next_absorb = np.zeros((len(obs), 1))
+
         self.episodes.append({ 
             "obs": obs,
+            "absorb": absorb,
             "act": act,
             "rwd": rwd,
             "next_obs": next_obs,
-            "done": done
+            "next_absorb": next_absorb, 
+            "done": done, # whether the next state is done
         })
         self.update_obs_stats(obs)
         
@@ -95,9 +126,11 @@ class ReplayBuffer:
                 If True sample the latest batch_size * 100 transitions. Default=False
         """ 
         obs = np.vstack([e["obs"] for e in self.episodes])
+        absorb = np.vstack([e["absorb"] for e in self.episodes])
         act = np.vstack([e["act"] for e in self.episodes])
         rwd = np.vstack([e["rwd"] for e in self.episodes])
         next_obs = np.vstack([e["next_obs"] for e in self.episodes])
+        next_absorb = np.vstack([e["next_absorb"] for e in self.episodes])
         done = np.vstack([e["done"] for e in self.episodes])
         
         # prioritize new data for sampling
@@ -108,10 +141,12 @@ class ReplayBuffer:
         
         batch = dict(
             obs=obs[idx], 
+            absorb=absorb[idx],
             act=act[idx], 
             rwd=rwd[idx], 
             next_obs=next_obs[idx], 
-            done=done[idx]
+            next_absorb=next_absorb[idx],
+            done=done[idx],
         )
         return {k: torch.from_numpy(v).to(torch.float32) for k, v in batch.items()}
         
@@ -197,13 +232,9 @@ def train(
         
         model.replay_buffer(obs, act, next_obs, reward, done)
         obs = next_obs
-        
-        # env done handeling
-        if (eps_len + 1) >= max_steps:
-            done = True
             
         # end of trajectory handeling
-        if done:
+        if done or (eps_len + 1) >= max_steps:
             model.replay_buffer.push()
             logger.push({"eps_return": eps_return/eps_len})
             logger.push({"eps_len": eps_len})

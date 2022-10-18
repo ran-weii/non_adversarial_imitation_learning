@@ -18,11 +18,18 @@ We perform experiments in the discrete-action mountain car environment. We compu
 
 ## Usage
 To generate demonstrations, run:
-
-```python ./scripts/create_demonstrations.py```
+```
+python ./scripts/create_demonstrations.py
+```
 
 To train the NAIL policy, run:
-
-```sh ./scripts/train_agent.sh```
+```
+sh ./scripts/train_agent.sh
+```
 
 You can modify the ``-algo`` argument in the ``.sh`` file to train AIL policy.
+
+To test trained agents, run:
+```
+python ./scripts/test_agent.py --exp_name "your_experiment_name"
+```

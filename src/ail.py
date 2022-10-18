@@ -61,15 +61,16 @@ class DAC(nn.Module):
         self.grad_penalty = grad_penalty
         self.grad_target = grad_target
         
+        # extra dimension for absorbing state flag
         self.discriminator = MLP(
-            input_dim=obs_dim + act_dim,
+            input_dim=obs_dim + act_dim + 1, 
             output_dim=1,
             hidden_dim=hidden_dim,
             num_hidden=num_hidden,
             activation=activation,
         )
         self.critic = DoubleQNetwork(
-            obs_dim, act_dim, hidden_dim, num_hidden, activation
+            obs_dim + 1, act_dim, hidden_dim, num_hidden, activation
         )
         self.critic_target = deepcopy(self.critic)
 
@@ -133,16 +134,18 @@ class DAC(nn.Module):
         obs_norm = (obs - self.obs_mean) / self.obs_variance**0.5
         return obs_norm
     
-    def compute_action_dist(self, critic, obs, beta=1.):
-        q1, q2 = critic.forward(obs)
+    def compute_action_dist(self, critic, obs, absorb, beta=1.):
+        critic_input = torch.cat([obs, absorb], dim=-1)
+        q1, q2 = critic.forward(critic_input)
         q = torch.min(q1, q2)
         pi = torch.softmax(q / beta, dim=-1)
         return pi
 
     def choose_action(self, obs):
         obs = torch.from_numpy(obs).view(1, -1).to(torch.float32)
+        absorb = torch.zeros(len(obs), 1)
         with torch.no_grad():
-            pi = self.compute_action_dist(self.critic_ref, obs, self.beta)
+            pi = self.compute_action_dist(self.critic_ref, obs, absorb, self.beta)
         a = torch.multinomial(pi, 1)[0].item()
         return a
     
@@ -171,16 +174,22 @@ class DAC(nn.Module):
         real_obs = real_batch["obs"]
         real_act = real_batch["act"]
         real_act = F.one_hot(real_act.long().squeeze(-1), self.act_dim).to(torch.float32)
+        real_absorb = real_batch["absorb"]
         fake_obs = fake_batch["obs"]
         fake_act = fake_batch["act"]
         fake_act = F.one_hot(fake_act.long().squeeze(-1), self.act_dim).to(torch.float32)
+        fake_absorb = fake_batch["absorb"]
         
         # normalize obs
         real_obs_norm = self.normalize_obs(real_obs)
         fake_obs_norm = self.normalize_obs(fake_obs)
         
-        real_inputs = torch.cat([real_obs_norm, real_act], dim=-1)
-        fake_inputs = torch.cat([fake_obs_norm, fake_act], dim=-1)
+        # mask absorbing state observation with zeros
+        real_obs_norm[real_absorb.flatten() == 1] *= 0
+        fake_obs_norm[fake_absorb.flatten() == 1] *= 0
+        
+        real_inputs = torch.cat([real_obs_norm, real_act, real_absorb], dim=-1)
+        fake_inputs = torch.cat([fake_obs_norm, fake_act, fake_absorb], dim=-1)
         inputs = torch.cat([real_inputs, fake_inputs], dim=0)
 
         real_labels = torch.zeros(self.batch_size, 1)
@@ -193,57 +202,74 @@ class DAC(nn.Module):
         gp = self.compute_gradient_penalty(real_inputs, fake_inputs)
         return d_loss, gp
     
-    def compute_reward(self, obs, act_oh):
+    def compute_reward(self, obs, act_oh, absorb):
         # compute reward as the negative probability of being fake
-        inputs = torch.cat([obs, act_oh], dim=-1)
+        inputs = torch.cat([obs, act_oh, absorb], dim=-1)
         log_r = self.discriminator(inputs)
         r = -log_r
         
         if self.algo == "nail":
             # add reference policy likelihood to reward
             # use beta = 1. for reference policy instead of actual beta
-            pi = self.compute_action_dist(self.critic_ref, obs, beta=1.)
+            pi = self.compute_action_dist(self.critic_ref, obs, absorb, beta=1.)
             log_pi = torch.log(pi + 1e-6)
             log_pi = torch.sum(act_oh * log_pi, dim=-1, keepdim=True)
             r += log_pi
         return r
 
     def compute_critic_loss(self):
-        real_batch = self.replay_buffer.sample(self.batch_size)
+        real_batch = self.real_buffer.sample(self.batch_size)
         fake_batch = self.replay_buffer.sample(self.batch_size)
         
         real_obs = real_batch["obs"]
+        real_absorb = real_batch["absorb"]
         real_act = real_batch["act"]
         real_next_obs = real_batch["next_obs"]
+        real_next_absorb = real_batch["next_absorb"]
         real_done = real_batch["done"]
         
         fake_obs = fake_batch["obs"]
+        fake_absorb = fake_batch["absorb"]
         fake_act = fake_batch["act"]
         fake_next_obs = fake_batch["next_obs"]
+        fake_next_absorb = fake_batch["next_absorb"]
         fake_done = fake_batch["done"]
 
         obs = torch.cat([real_obs, fake_obs], dim=-2)
+        absorb = torch.cat([real_absorb, fake_absorb], dim=-2)
         act = torch.cat([real_act, fake_act], dim=-2)
         next_obs = torch.cat([real_next_obs, fake_next_obs], dim=-2)
+        next_absorb = torch.cat([real_next_absorb, fake_next_absorb], dim=-2)
         done = torch.cat([real_done, fake_done], dim=-2)
-
+        
         act_oh = F.one_hot(act.long().squeeze(-1), self.act_dim).to(torch.float32)
         
         # normalize observation
         obs_norm = self.normalize_obs(obs)
         next_obs_norm = self.normalize_obs(next_obs)
+
+        # mask absorbing state observation with zeros
+        obs_norm[absorb.flatten() == 1] *= 0
+        next_obs_norm[next_absorb.flatten() == 1] *= 0
         
+        critic_input = torch.cat([obs_norm, absorb], dim=-1)
+        critic_next_input = torch.cat([next_obs_norm, next_absorb], dim=-1)
         with torch.no_grad():    
             # compute reward
-            r = self.compute_reward(obs_norm, act_oh)
+            r = self.compute_reward(obs_norm, act_oh, absorb)
+            
+            # compute absorbing reward
+            inputs_a = torch.cat([torch.zeros(1, self.obs_dim + self.act_dim), torch.ones(1, 1)], dim=-1)
+            r_a = -self.discriminator(inputs_a)
 
             # compute value target
-            q1_next, q2_next = self.critic_target(next_obs_norm)
+            q1_next, q2_next = self.critic_target(critic_next_input)
             q_next = torch.min(q1_next, q2_next)
             v_next = torch.logsumexp(q_next / self.beta, dim=-1, keepdim=True) * self.beta
-            q_target = r + (1 - done) * self.gamma * v_next
+            v_absorb = self.gamma / (1 - self.gamma) * r_a
+            q_target = r + (1 - next_absorb) * self.gamma * v_next + next_absorb * v_absorb
         
-        q1, q2 = self.critic(obs_norm)
+        q1, q2 = self.critic(critic_input)
         q1 = torch.gather(q1, -1, act.long())
         q2 = torch.gather(q2, -1, act.long())
         q1_loss = torch.pow(q1 - q_target, 2).mean()
